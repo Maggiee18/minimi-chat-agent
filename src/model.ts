@@ -29,14 +29,14 @@ export class AnthropicModel implements ModelClient {
   // drop them once and remember, rather than failing every turn.
   private useReasoningParams = config.thinking !== "off";
 
-  constructor(apiKey: string) {
+  constructor(apiKey: string, private models = { answer: config.answerModel, note: config.noteModel }) {
     this.client = new Anthropic({ apiKey, maxRetries: 2 });
   }
 
   async turn(req: Parameters<ModelClient["turn"]>[0], onText: (d: string) => void, signal?: AbortSignal): Promise<TurnResult> {
     const run = async () => {
       const params: Anthropic.Messages.MessageCreateParamsStreaming = {
-        model: config.answerModel,
+        model: this.models.answer,
         max_tokens: 4096,
         system: req.system,
         messages: req.messages,
@@ -67,7 +67,7 @@ export class AnthropicModel implements ModelClient {
 
   async json<T>(req: { system: string; prompt: string; schema: Record<string, unknown> }): Promise<T> {
     const msg = await this.client.messages.create({
-      model: config.noteModel,
+      model: this.models.note,
       max_tokens: 1200,
       system: req.system,
       messages: [{ role: "user", content: req.prompt }],

@@ -60,7 +60,7 @@ export function createApp({ store, model, search, maxRounds, root }: { store: St
         const msg =
           e?.status === 401 || e?.status === 403 || (e?.status === 400 && /api.key/i.test(String(e?.message))) ? "The model API key was rejected. Check the key in .env and restart."
           : e?.status === 429 ? "The model's rate limit was hit (free tiers allow only a few requests per minute and per day). Wait a minute and try again."
-          : e?.status === 503 ? "The model is overloaded right now (the free tier gets busy). Wait a few seconds and try again."
+          : e?.status === 503 || e?.status === 504 ? "The model is overloaded right now (the free tier gets busy). Wait a few seconds and try again."
           : e?.status === 404 ? "The model name wasn't found. Check ANSWER_MODEL / NOTE_MODEL in .env."
           : /fetch failed|ENOTFOUND|ECONNREFUSED|ETIMEDOUT/i.test(String(e?.message) + String(e?.cause?.code)) ? "Couldn't reach the model API. Check your internet connection and try again."
           : "Something went wrong while answering. Please try again.";

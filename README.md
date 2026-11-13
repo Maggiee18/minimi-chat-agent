@@ -16,10 +16,13 @@ npm run dev               # → http://localhost:3000
 
 | Key | Where | Cost |
 |---|---|---|
-| `GEMINI_API_KEY` **or** `ANTHROPIC_API_KEY` | aistudio.google.com/apikey (Gemini Flash) or platform.claude.com (Claude Sonnet + Haiku) | Gemini has a free tier; Claude is paid |
-| `TAVILY_API_KEY` | app.tavily.com | free tier: 1,000 searches/month |
+| `GEMINI_API_KEY` | aistudio.google.com/apikey | free tier |
+| `GROQ_API_KEY` | console.groq.com/keys | free tier |
+| `OPENROUTER_API_KEY` | openrouter.ai/keys | free models |
+| `ANTHROPIC_API_KEY` | platform.claude.com | paid, best answers |
+| `TAVILY_API_KEY` (required) | app.tavily.com | free tier: 1,000 searches/month |
 
-If both model keys are set, Claude is used. Gemini's free tier has low daily request limits, so a long session may hit "rate limit" messages.
+Set at least one model key. Every model key you add becomes a backup: when one free tier runs out or is overloaded, the next one answers (Claude → Gemini → Groq → OpenRouter). The server prints the order on startup.
 
 Optional settings (models, thinking, effort, port) are listed in `.env.example`.
 
@@ -56,6 +59,7 @@ src/
   model.ts     ModelClient interface + Anthropic implementation
   gemini.ts    same interface over Gemini's native API (free tier; falls back to older Flash models when one is overloaded)
   openai-compat.ts  same interface over any OpenAI-compatible API (Groq, OpenRouter, Ollama…)
+  fallback.ts  chains the backends: on quota / overload / timeout, the next one answers
   db.ts        SQLite schema (exchanges, FTS5 index, search cache)
   app.ts       HTTP: NDJSON streaming chat endpoint, conversation list
 public/        plain HTML/CSS/JS chat UI, no build step (light/dark, mobile, keyboard shortcuts: Ctrl K new thread, / focus, Esc stop)

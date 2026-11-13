@@ -10,6 +10,7 @@ import { FakeSearch, memStore, TZ } from "./helpers.js";
 async function fakeGemini(replies: Array<object[] | object>) {
   const reqs: Array<{ url: string; key: string | undefined; auth: string | undefined; body: any }> = [];
   const server = http.createServer((req, res) => {
+    if (req.method === "GET") { res.writeHead(404).end(); return; } // model listing unavailable → trust config
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", () => {
@@ -70,6 +71,7 @@ test("503 high demand on the preferred model falls through to the next one", asy
   const busy = { error: { code: 503, message: "high demand", status: "UNAVAILABLE" } };
   const seen: string[] = [];
   const server = http.createServer((req, res) => {
+    if (req.method === "GET") { res.writeHead(404).end(); return; }
     let raw = ""; req.on("data", (c) => (raw += c));
     req.on("end", () => {
       seen.push(`${req.url} ${JSON.stringify(JSON.parse(raw).generationConfig ?? null)}`);
@@ -93,6 +95,7 @@ test("503 high demand on the preferred model falls through to the next one", asy
 test("a model that hangs is abandoned quickly and skipped on the next question", async () => {
   const seen: string[] = [];
   const server = http.createServer((req, res) => {
+    if (req.method === "GET") { res.writeHead(404).end(); return; }
     req.resume();
     req.on("end", () => {
       seen.push(req.url!);
@@ -111,4 +114,32 @@ test("a model that hangs is abandoned quickly and skipped on the next question",
   assert.equal(await ask(), "ok");
   server.closeAllConnections(); server.close();
   assert.equal(seen.filter((u) => u.includes("slow-model")).length, 1, "second question skipped the bad model");
+});
+
+test("configured model names this key can't use are swapped for available Flash models", async () => {
+  const posted: string[] = [];
+  const server = http.createServer((req, res) => {
+    if (req.method === "GET") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ models: [
+        { name: "models/gemini-2.5-flash", supportedGenerationMethods: ["generateContent"] },
+        { name: "models/gemini-3.1-flash-lite", supportedGenerationMethods: ["generateContent"] },
+        { name: "models/gemini-3.6-flash", supportedGenerationMethods: ["generateContent"] },
+        { name: "models/gemini-embedding-2", supportedGenerationMethods: ["embedContent"] },
+      ] }));
+      return;
+    }
+    req.resume();
+    req.on("end", () => {
+      posted.push(req.url!);
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(`data: ${JSON.stringify(cand([{ text: "ok" }], "STOP"))}\n\n`);
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, r));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1beta/models`;
+  const model = new GeminiModel({ apiKey: "k", answerModel: "gemini-9-flash", noteModel: "x", baseUrl: base });
+  await model.turn({ system: [{ type: "text", text: "s" }], messages: [{ role: "user", content: "hi" }], tools: [], allowTools: true }, () => {});
+  server.close();
+  assert.match(posted[0], /gemini-3\.6-flash:/, "newest available non-lite Flash");
 });

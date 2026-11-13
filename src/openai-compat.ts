@@ -33,18 +33,35 @@ export class OpenAICompatModel implements ModelClient {
 
   private async post(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
     let res!: Response;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      // Stop waiting for a reply that hasn't started after 25s (Node would wait 5 minutes).
+      const timeout = new AbortController();
+      const timer = setTimeout(() => timeout.abort(), 25_000);
+      try {
       res = await fetch(this.opts.baseUrl.replace(/\/$/, "") + "/chat/completions", {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${this.opts.apiKey}` },
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${this.opts.apiKey}`,
+          // OpenRouter asks apps to identify themselves; other providers ignore these.
+          "http-referer": "http://localhost",
+          "x-title": "minimi chat agent",
+        },
         body: JSON.stringify(body),
-        signal,
+        signal: signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal,
       });
+      } catch (e) {
+        if (signal?.aborted) throw e;
+        throw new HttpError(504, `${String(body.model)} did not respond in time`);
+      } finally {
+        clearTimeout(timer);
+      }
       // Free tiers rate limit hard; one or two short retries smooth over per-minute limits.
-      if ((res.status === 429 || res.status >= 500) && attempt < 2) { await new Promise((r) => setTimeout(r, 1500 * (attempt + 1))); continue; }
+      // One quick retry for a blip; anything longer is the fallback chain's job.
+      if (res.status >= 500 && attempt === 0) { await new Promise((r) => setTimeout(r, 800)); continue; }
       break;
     }
-    if (!res.ok) throw new HttpError(res.status, `${res.status}: ${(await res.text()).slice(0, 300)}`);
+    if (!res.ok) throw new HttpError(res.status, `${String(body.model)} ${res.status}: ${(await res.text()).slice(0, 300)}`);
     return res;
   }
 

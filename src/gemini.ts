@@ -43,12 +43,52 @@ export class GeminiModel implements ModelClient {
    * the next question doesn't waste time on it again (a small circuit breaker).
    */
   private busyUntil = new Map<string, number>();
+  private available?: Promise<Set<string> | null>;
 
-  private async post(models: string[], method: string, build: (model: string) => Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+  /**
+   * Which models this key can actually use (GET /models), fetched once. Model names
+   * change often and differ per account, so configured names that don't exist are
+   * dropped instead of failing every turn with a 404. If listing fails, we trust the config.
+   */
+  private listModels(): Promise<Set<string> | null> {
+    this.available ??= fetch(`${this.opts.baseUrl ?? BASE}?pageSize=1000`, { headers: { "x-goog-api-key": this.opts.apiKey }, signal: AbortSignal.timeout(8000) })
+      .then(async (r) => {
+        if (!r.ok) return null;
+        const j = (await r.json()) as { models?: Array<{ name: string; supportedGenerationMethods?: string[] }> };
+        const names = (j.models ?? [])
+          .filter((m) => !m.supportedGenerationMethods || m.supportedGenerationMethods.includes("generateContent"))
+          .map((m) => m.name.replace(/^models\//, ""));
+        return names.length ? new Set(names) : null;
+      })
+      .catch(() => null);
+    return this.available;
+  }
+
+  /**
+   * Configured models this key can use, in order, followed by every other text Flash
+   * model the key can use (newest first, Flash before Flash-Lite) as extra backups.
+   */
+  private async resolve(models: string[], kind: "answer" | "note"): Promise<string[]> {
+    const avail = await this.listModels();
+    if (!avail) return models;
+    const ok = models.filter((m) => avail.has(m));
+    const version = (m: string) => parseFloat(m.replace(/^gemini-/, "")) || 0;
+    const extras = [...avail]
+      .filter((m) => /^gemini-[\d.]+-flash/.test(m) && !/image|tts|audio|live|transcribe|translate|embedding|native/.test(m) && !ok.includes(m))
+      .sort((a, b) => (kind === "answer" ? Number(/lite/.test(a)) - Number(/lite/.test(b)) : 0) || version(b) - version(a));
+    const all = [...ok, ...extras];
+    if (!ok.length && all.length) console.warn(`[gemini] none of ${models.join(", ")} is available to this key; using ${all.slice(0, 3).join(", ")}`);
+    return all.length ? all : models;
+  }
+
+  private async post(configured: string[], kind: "answer" | "note", method: string, build: (model: string) => Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+    const models = await this.resolve(configured, kind);
     const now = Date.now();
-    const healthy = models.filter((m) => (this.busyUntil.get(m) ?? 0) < now);
-    const order = healthy.length ? healthy : models; // if all are cooling down, try them anyway
+    const cooling = (m: string) => (this.busyUntil.get(m) ?? 0) >= now;
+    // Healthy models first; ones that were busy recently still get a turn at the end.
+    const order = [...models.filter((m) => !cooling(m)), ...models.filter(cooling)];
     let last: HttpError | undefined;
+    let busy: HttpError | undefined; // a 503/timeout explains a failure better than a later 404
     for (const [i, model] of order.entries()) {
       const isLast = i === order.length - 1;
       const url = `${this.opts.baseUrl ?? BASE}/${encodeURIComponent(model)}:${method}`;
@@ -74,29 +114,34 @@ export class GeminiModel implements ModelClient {
         if (res.ok) return res;
         const detail = await res.text();
         last = new HttpError(res.status, `${model} ${res.status}: ${detail.match(/"message":\s*"([^"]+)/)?.[1] ?? detail.slice(0, 200)}`);
-        // Retry the same model only when there's nowhere else to go.
-        if (isLast && attempt === 0 && (res.status === 429 || res.status >= 500)) { await new Promise((r) => setTimeout(r, res.status === 429 ? 2500 : 1000)); continue; }
+        // Retry the same model only when there's nowhere else to go, and never for a used-up daily quota.
+        const daily = res.status === 429 && /per day|PerDay/i.test(detail);
+        if (isLast && attempt === 0 && !daily && (res.status === 429 || res.status >= 500)) { await new Promise((r) => setTimeout(r, res.status === 429 ? 2500 : 1000)); continue; }
         break;
       }
       if (last && (last.status >= 500 || last.status === 404 || last.status === 429)) {
-        this.busyUntil.set(model, Date.now() + 3 * 60_000);
+        if (last.status !== 404) busy = last;
+        // A missing model won't come back soon, a used-up daily quota comes back when Google
+        // says so ("retry in 12h33m"), and a busy model might be fine in a few minutes.
+        const wait = last.status === 404 ? 60 * 60_000 : retryAfterMs(last.message) ?? 3 * 60_000;
+        this.busyUntil.set(model, Date.now() + wait);
         if (!isLast) console.warn(`[gemini] ${last.message}; switching to the next model`);
         continue;
       }
       throw last;
     }
-    throw last;
+    throw busy ?? last;
   }
 
   /** Retry once without an optional setting if this model/account rejects it. */
-  private async postWithFallback(models: string[], method: string, build: (model: string) => Record<string, unknown>, flag: "useThinkingConfig" | "useJsonSchema", signal?: AbortSignal) {
+  private async postWithFallback(models: string[], kind: "answer" | "note", method: string, build: (model: string) => Record<string, unknown>, flag: "useThinkingConfig" | "useJsonSchema", signal?: AbortSignal) {
     try {
-      return await this.post(models, method, build, signal);
+      return await this.post(models, kind, method, build, signal);
     } catch (e) {
       if (!(e instanceof HttpError) || e.status !== 400 || !this[flag] || /api.key/i.test(e.message)) throw e;
       console.warn(`[gemini] ${flag} rejected, retrying without it: ${e.message.slice(0, 160)}`);
       this[flag] = false;
-      return await this.post(models, method, build, signal);
+      return await this.post(models, kind, method, build, signal);
     }
   }
 
@@ -112,7 +157,7 @@ export class GeminiModel implements ModelClient {
       if (this.useThinkingConfig && this.opts.thinkingLevel && !/gemini-[12]\./.test(model)) body.generationConfig = { thinkingConfig: { thinkingLevel: this.opts.thinkingLevel } };
       return body;
     };
-    const res = await this.postWithFallback(this.answerModels, "streamGenerateContent?alt=sse", build, "useThinkingConfig", signal);
+    const res = await this.postWithFallback(this.answerModels, "answer", "streamGenerateContent?alt=sse", build, "useThinkingConfig", signal);
 
     const parts: Part[] = [];
     let text = "";
@@ -174,11 +219,18 @@ export class GeminiModel implements ModelClient {
         ? { responseMimeType: "application/json", responseJsonSchema: req.schema }
         : { responseMimeType: "application/json" },
     });
-    const res = await this.postWithFallback(this.noteModels, "generateContent", build, "useJsonSchema");
+    const res = await this.postWithFallback(this.noteModels, "note", "generateContent", build, "useJsonSchema");
     const json = (await res.json()) as any;
     const out: string = (json.candidates?.[0]?.content?.parts ?? []).filter((p: Part) => !p.thought).map((p: Part) => p.text ?? "").join("");
     return JSON.parse(out.slice(out.indexOf("{"), out.lastIndexOf("}") + 1)) as T;
   }
+}
+
+/** Parse Google's "Please retry in 12h33m45.7s" / "retry in 41s" hint. */
+export function retryAfterMs(message: string): number | null {
+  const m = message.match(/retry in\s+(?:(\d+)h)?(?:(\d+)m(?!s))?(?:([\d.]+)s)?/i);
+  if (!m || (!m[1] && !m[2] && !m[3])) return null;
+  return ((Number(m[1] ?? 0) * 60 + Number(m[2] ?? 0)) * 60 + Number(m[3] ?? 0)) * 1000;
 }
 
 /** Anthropic-shaped messages → Gemini `contents`. */
