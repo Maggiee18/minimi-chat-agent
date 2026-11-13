@@ -31,35 +31,56 @@ export class GeminiModel implements ModelClient {
   private noteModels: string[];
 
   /** answerModel / noteModel may be comma separated lists: first is preferred, the rest are fallbacks. */
-  constructor(private opts: { apiKey: string; answerModel: string; noteModel: string; thinkingLevel?: string; baseUrl?: string }) {
+  constructor(private opts: { apiKey: string; answerModel: string; noteModel: string; thinkingLevel?: string; baseUrl?: string; headerTimeoutMs?: number }) {
     this.answerModels = opts.answerModel.split(",").map((m) => m.trim()).filter(Boolean);
     this.noteModels = opts.noteModel.split(",").map((m) => m.trim()).filter(Boolean);
   }
 
   /**
-   * POST to the first model in `models` that answers. Gemini's free tier often returns
-   * 503 "high demand" for its newest model, so on 503/404 we fall through to the next
-   * model in the list (e.g. 3.8 Flash → 3.6 Flash → 2.5 Flash) instead of failing the turn.
+   * POST to the first healthy model in `models`. Gemini's free tier often answers 503
+   * "high demand" for its newest model, or hangs without answering. Either way we move
+   * on to the next model in the list, and remember the bad one for a few minutes so
+   * the next question doesn't waste time on it again (a small circuit breaker).
    */
+  private busyUntil = new Map<string, number>();
+
   private async post(models: string[], method: string, build: (model: string) => Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+    const now = Date.now();
+    const healthy = models.filter((m) => (this.busyUntil.get(m) ?? 0) < now);
+    const order = healthy.length ? healthy : models; // if all are cooling down, try them anyway
     let last: HttpError | undefined;
-    for (const model of models) {
+    for (const [i, model] of order.entries()) {
+      const isLast = i === order.length - 1;
       const url = `${this.opts.baseUrl ?? BASE}/${encodeURIComponent(model)}:${method}`;
       for (let attempt = 0; attempt < 2; attempt++) {
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-goog-api-key": this.opts.apiKey },
-          body: JSON.stringify(build(model)),
-          signal,
-        });
+        // Give up waiting for the first byte after a while; otherwise Node waits 5 minutes.
+        const timeout = new AbortController();
+        const timer = setTimeout(() => timeout.abort(), this.opts.headerTimeoutMs ?? 20_000);
+        let res: Response;
+        try {
+          res = await fetch(url, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-goog-api-key": this.opts.apiKey },
+            body: JSON.stringify(build(model)),
+            signal: signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal,
+          });
+        } catch (e) {
+          if (signal?.aborted) throw e; // the user pressed stop
+          last = new HttpError(504, `${model} did not respond in time`);
+          break;
+        } finally {
+          clearTimeout(timer);
+        }
         if (res.ok) return res;
-        last = new HttpError(res.status, `${model} ${res.status}: ${(await res.text()).slice(0, 400)}`);
-        if (res.status === 429 && attempt === 0) { await new Promise((r) => setTimeout(r, 2500)); continue; }
-        if (res.status >= 500 && attempt === 0) { await new Promise((r) => setTimeout(r, 800)); continue; }
+        const detail = await res.text();
+        last = new HttpError(res.status, `${model} ${res.status}: ${detail.match(/"message":\s*"([^"]+)/)?.[1] ?? detail.slice(0, 200)}`);
+        // Retry the same model only when there's nowhere else to go.
+        if (isLast && attempt === 0 && (res.status === 429 || res.status >= 500)) { await new Promise((r) => setTimeout(r, res.status === 429 ? 2500 : 1000)); continue; }
         break;
       }
       if (last && (last.status >= 500 || last.status === 404 || last.status === 429)) {
-        console.warn(`[gemini] ${last.message.split("\n")[0].slice(0, 120)}; trying next model`);
+        this.busyUntil.set(model, Date.now() + 3 * 60_000);
+        if (!isLast) console.warn(`[gemini] ${last.message}; switching to the next model`);
         continue;
       }
       throw last;
@@ -100,7 +121,12 @@ export class GeminiModel implements ModelClient {
     const dec = new TextDecoder();
     let buf = "";
     for (;;) {
-      const { value, done } = await reader.read();
+      // If the stream goes silent for 45s, stop waiting rather than hang the turn.
+      let stall: NodeJS.Timeout | undefined;
+      const { value, done } = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, rej) => { stall = setTimeout(() => { reader.cancel().catch(() => {}); rej(new HttpError(504, "Gemini stopped responding mid answer")); }, 45_000); }),
+      ]).finally(() => clearTimeout(stall));
       if (done) break;
       buf += dec.decode(value, { stream: true });
       let i;
