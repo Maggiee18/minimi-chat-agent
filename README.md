@@ -16,7 +16,7 @@ and it finds that exact conversation, rechecks each claim it made against fresh 
 - **Remembers by date.** "Last Tuesday", "on 3 November" and "this week" are resolved in your own time zone. Memory is only used when your question refers back to a past conversation, so a question about the news "this week" doesn't drag old chats in.
 - **Rechecks itself.** Each answer is saved with the checkable claims it made. "Is that still correct?" reports each claim as unchanged, changed (old → new) or couldn't verify.
 - **Honest about gaps.** If there's no conversation on the date you mention, it says so instead of inventing one, then helps anyway.
-- **Fast and resilient.** Answers stream as they're written; searches show live as steps. If one model provider is out of quota, overloaded or slow, the next one answers automatically.
+- **Free to run, fast and resilient.** Works on free tiers (Groq, Gemini, OpenRouter). Answers stream as they're written and searches show live as steps. If one provider is out of quota, overloaded or slow, the next one answers automatically.
 - **Nice to use.** Light and dark themes, works on mobile, "Ask next" suggestions, copy and retry buttons, keyboard shortcuts (`Ctrl K` new thread, `/` focus, `Esc` stop).
 
 ## Quick start
@@ -36,24 +36,29 @@ Then open **http://localhost:3000**.
 
 ### API keys
 
-You need **Tavily** for search plus **at least one** model key. Everything except Claude has a free tier, no card needed.
+It runs entirely on **free tiers**, no card needed. You need **Tavily** for search plus **at least one** free model key; Groq is the quickest to set up and the fastest.
 
 | Key | Get it at | Cost |
 |---|---|---|
 | `TAVILY_API_KEY` **(required)** | app.tavily.com | free, 1,000 searches a month |
-| `GEMINI_API_KEY` | aistudio.google.com/apikey | free tier (small daily limit) |
-| `GROQ_API_KEY` | console.groq.com/keys | free tier, very fast |
+| `GROQ_API_KEY` (recommended) | console.groq.com/keys | free, about 1,000 requests a day per model, very fast |
+| `GEMINI_API_KEY` | aistudio.google.com/apikey | free, but only about 20 requests a day per model |
 | `OPENROUTER_API_KEY` | openrouter.ai/keys | free models (leave the key's credit limit empty) |
-| `ANTHROPIC_API_KEY` | platform.claude.com | paid, best answers |
 
-Every model key you set becomes a backup for the others, in this order: **Claude → Gemini → Groq → OpenRouter**. When one runs out of quota or is overloaded, the next answers and the failed one is skipped until it should recover. The server prints the order when it starts:
+Every model key you set becomes a backup for the others. When one runs out of quota, is overloaded or doesn't respond, the next one answers and the failed one is skipped until it should recover. The server prints the order when it starts:
 
 ```
 Chat agent running → http://localhost:3000
 models, in fallback order: gemini → groq:openai/gpt-oss-120b → groq:qwen/qwen3.8-27b → groq:openai/gpt-oss-20b → openrouter:openrouter/free
 ```
 
-To put a different provider first, set `PROVIDER=groq` (or `gemini`, `openrouter`, `anthropic`) in `.env`. All optional settings are listed in [`.env.example`](.env.example).
+To choose which provider goes first, set `PROVIDER=groq` (or `gemini`, `openrouter`) in `.env`. All optional settings are listed in [`.env.example`](.env.example).
+
+#### Optional: Claude
+
+If you have an Anthropic key, add `ANTHROPIC_API_KEY`. Claude then goes first (Sonnet writes answers, Haiku does background notes) and the free providers become its backups. It uses the same model interface as the others.
+
+> **Tested with:** Gemini and Groq free tiers, end to end, with real web search. The Claude path is covered by the offline tests but hasn't been run against a live Anthropic key.
 
 ## Things to try
 
@@ -126,7 +131,7 @@ All data stays on your machine in `data/agent.db`. Delete that file to reset mem
 |---|---|
 | `'tsx' is not recognized` | Run `npm install` first |
 | `Missing … in .env` | Add `TAVILY_API_KEY` and at least one model key, then restart |
-| "Today's free model quota is used up" | Gemini's free tier allows only ~20 requests a day per model. Add a `GROQ_API_KEY` or `OPENROUTER_API_KEY` as a backup |
+| "Today's free model quota is used up" | Gemini's free tier allows only about 20 requests a day per model. Add a `GROQ_API_KEY` or `OPENROUTER_API_KEY` as a backup |
 | "The model is overloaded right now" | Free tiers get busy; wait a few seconds or add another provider key |
 | "The model API key was rejected" | Check the key in `.env` has no spaces or quotes, then restart |
 | PowerShell: "running scripts is disabled" | Use Command Prompt, or type `npm.cmd` instead of `npm` |
@@ -134,4 +139,4 @@ All data stays on your machine in `data/agent.db`. Delete that file to reset mem
 
 ## Built with
 
-Node + TypeScript, Express, Node's built in SQLite (FTS5), chrono for dates, Tavily for search, and Claude / Gemini / Groq / OpenRouter for models. The UI is plain JavaScript with marked and DOMPurify. No agent framework: the loop is about 150 lines in `src/agent.ts`.
+Node + TypeScript, Express, Node's built in SQLite (FTS5), chrono for dates, Tavily for search, and Groq / Gemini / OpenRouter (free) or Claude (optional) for models. The UI is plain JavaScript with marked and DOMPurify. No agent framework: the loop is about 150 lines in `src/agent.ts`.
