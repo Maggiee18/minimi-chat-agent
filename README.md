@@ -54,7 +54,8 @@ src/
   followups.ts three "ask next" suggestions after each answer (Haiku, never blocks the reply)
   prompt.ts    system prompt (static, cached) + per turn context
   model.ts     ModelClient interface + Anthropic implementation
-  openai-compat.ts  same interface over any OpenAI-compatible API (Gemini free tier, Groq, OpenRouter…)
+  gemini.ts    same interface over Gemini's native API (free tier; falls back to older Flash models when one is overloaded)
+  openai-compat.ts  same interface over any OpenAI-compatible API (Groq, OpenRouter, Ollama…)
   db.ts        SQLite schema (exchanges, FTS5 index, search cache)
   app.ts       HTTP: NDJSON streaming chat endpoint, conversation list
 public/        plain HTML/CSS/JS chat UI, no build step (light/dark, mobile, keyboard shortcuts: Ctrl K new thread, / focus, Esc stop)

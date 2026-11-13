@@ -22,7 +22,7 @@ message ─► recall (plain code, ~1 ms) ─► Sonnet streams ⇄ web_search �
 
 ## Why this shape
 
-The loop is about 150 lines that I own (`agent.ts`) behind a small `ModelClient` interface, so it is testable with a scripted fake model (`test/agent.test.ts`) and every behaviour can be explained line by line. The same interface has two implementations: Claude (default) and any OpenAI compatible API, which is how it also runs on Gemini's free tier. Date math lives in deterministic, unit tested code because that is exactly where models slip (wrong weekday, wrong year, UTC vs local), and it costs a millisecond instead of a model round trip. Storage is Node's built in SQLite (`node:sqlite`, with FTS5): no native addon to compile and no external service, so `npm install && npm run dev` works on any machine with Node 22.13+.
+The loop is about 150 lines that I own (`agent.ts`) behind a small `ModelClient` interface, so it is testable with a scripted fake model (`test/agent.test.ts`) and every behaviour can be explained line by line. The same interface has three implementations: Claude (default), Gemini's native API (free tier, with a fallback list of models because the newest one is often overloaded) and any OpenAI compatible API. Date math lives in deterministic, unit tested code because that is exactly where models slip (wrong weekday, wrong year, UTC vs local), and it costs a millisecond instead of a model round trip. Storage is Node's built in SQLite (`node:sqlite`, with FTS5): no native addon to compile and no external service, so `npm install && npm run dev` works on any machine with Node 22.13+.
 
 ## Considered and rejected
 

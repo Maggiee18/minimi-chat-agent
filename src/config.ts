@@ -9,14 +9,15 @@ const env = (k: string) => (process.env[k] ?? "").trim();
 
 /**
  * Provider: Anthropic (default when its key is set) or Google Gemini's free tier
- * through its OpenAI-compatible endpoint. Any other OpenAI-compatible API works via
+ * (native API). Any OpenAI-compatible API (Groq, OpenRouter, Ollama…) works via
  * PROVIDER=openai + OPENAI_BASE_URL.
  */
 const provider = (env("PROVIDER") || (env("ANTHROPIC_API_KEY") ? "anthropic" : env("GEMINI_API_KEY") ? "gemini" : "anthropic")) as "anthropic" | "gemini" | "openai";
 const defaults = {
   anthropic: { answer: "claude-sonnet-5-5", note: "claude-haiku-5-5" },
   // Flash writes answers; Flash-Lite (bigger free quota) does the background bookkeeping.
-  gemini: { answer: "gemini-3.8-flash", note: "gemini-3.1-flash-lite" },
+  // Later entries are fallbacks for when the free tier says "high demand" (503).
+  gemini: { answer: "gemini-3.8-flash,gemini-3.6-flash,gemini-2.5-flash", note: "gemini-3.1-flash-lite,gemini-2.5-flash-lite" },
   openai: { answer: env("ANSWER_MODEL"), note: env("NOTE_MODEL") || env("ANSWER_MODEL") },
 }[provider];
 
@@ -26,7 +27,7 @@ export const config = {
   anthropicKey: env("ANTHROPIC_API_KEY"),
   geminiKey: env("GEMINI_API_KEY"),
   openaiKey: env("OPENAI_API_KEY"),
-  openaiBaseUrl: provider === "gemini" ? "https://generativelanguage.googleapis.com/v1beta/openai/" : env("OPENAI_BASE_URL"),
+  openaiBaseUrl: env("OPENAI_BASE_URL"),
   tavilyKey: env("TAVILY_API_KEY"),
 
   // Main model: writes every answer and decides when/what to search.
