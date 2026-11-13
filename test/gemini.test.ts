@@ -86,6 +86,29 @@ test("503 high demand on the preferred model falls through to the next one", asy
   server.close();
   assert.equal(out, "ok");
   assert.equal(r.stopReason, "end_turn");
-  assert.equal(seen.filter((s) => s.includes("3.8")).length, 2, "one quick retry on the busy model");
+  assert.equal(seen.filter((s) => s.includes("3.8")).length, 1, "no time wasted retrying a busy model when a fallback exists");
   assert.match(seen.at(-1)!, /gemini-2\.5-flash.*null/, "fallback model gets no thinkingLevel");
+});
+
+test("a model that hangs is abandoned quickly and skipped on the next question", async () => {
+  const seen: string[] = [];
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      seen.push(req.url!);
+      if (req.url!.includes("slow-model")) return; // never answers
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(`data: ${JSON.stringify(cand([{ text: "ok" }], "STOP"))}\n\n`);
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, r));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1beta/models`;
+  const model = new GeminiModel({ apiKey: "k", answerModel: "slow-model,gemini-2.5-flash", noteModel: "x", baseUrl: base, headerTimeoutMs: 300 });
+  const ask = async () => { let out = ""; await model.turn({ system: [{ type: "text", text: "s" }], messages: [{ role: "user", content: "hi" }], tools: [], allowTools: true }, (d) => (out += d)); return out; };
+  const t0 = Date.now();
+  assert.equal(await ask(), "ok");
+  assert.ok(Date.now() - t0 < 2000, "did not wait long on the hanging model");
+  assert.equal(await ask(), "ok");
+  server.closeAllConnections(); server.close();
+  assert.equal(seen.filter((u) => u.includes("slow-model")).length, 1, "second question skipped the bad model");
 });
